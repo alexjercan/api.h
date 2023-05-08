@@ -84,10 +84,13 @@ int api_start(API api) {
 
         {
             char buf[2048];
+            char *response = "HTTP/1.1 200 OK\n\nHi";
             memset(buf, 0, 2048);
             read(c_fd, buf, sizeof(buf));
-            printf("From client: %s to server:\n", buf);
+            printf("From client:\n%s\n", buf);
 
+            printf("From server:\n%s\n", response);
+            write(c_fd, response, strlen(response));
         }
 
         close(c_fd);
