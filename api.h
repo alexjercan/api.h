@@ -3,14 +3,17 @@
 
 typedef enum  {
     METHOD_GET = 0,
-    METHO_POST,
+    METHOD_POST,
 
     METHODS_COUNT,
     METHOD_UNDEFINED = -1,
 } API_Method;
 
 typedef struct API_Request {
-    char *buffer;
+    char *raw;
+
+    API_Method method;
+    const char *path;
 } API_Request;
 
 typedef struct API_Response {
@@ -41,22 +44,57 @@ void api_destroy(struct API_Router *router);
 
 #define BUF_SIZE 2048
 
-typedef struct API_Router {
+typedef struct API_Route {
+    const char *path;
+    API_Method method;
+    API_Callback callback;
+} API_Route;
 
+typedef struct API_Router {
+    API_Route *items;
+    size_t count;
+    size_t capacity;
 } API_Router;
 
-static void handle_connection(int s_fd);
+static void handle_connection(API_Router *router, int s_fd);
 static int read_request(int c_fd, API_Request *request);
-static API_Response build_response(API_Request request);
+static API_Response build_response(API_Router *router, API_Request request);
 static int write_response(int c_fd, API_Response response);
+static API_Method parse_method(char *buffer);
 
 API_Router* api_create() {
     API_Router *router = malloc(sizeof(API_Router));
+
+    router->items = NULL;
+    router->count = 0;
+    router->capacity = 0;
 
     return router;
 }
 
 int api_route(API_Router *router, const char *path, API_Method method, API_Callback callback) {
+    API_Route route = { .path = path, .method = method, .callback = callback };
+
+    if (router->count >= router->capacity) {
+        size_t new_capacity = router->capacity * 2;
+        API_Route *new_items = NULL;
+
+        if (new_capacity == 0) {
+            new_capacity = 32;
+        }
+
+        new_items = realloc(router->items, new_capacity * sizeof(API_Route));
+        if (new_items == NULL) {
+            perror("realloc");
+            return -1;
+        }
+
+        router->items = new_items;
+        router->capacity = new_capacity;
+    }
+
+    router->items[router->count++] = route;
+
     return 0;
 }
 
@@ -98,7 +136,7 @@ int api_start(API_Router *router, const char *addr, uint16_t port) {
 
     // TODO: How to do gracefull shutdown?
     while (1) {
-        handle_connection(s_fd);
+        handle_connection(router, s_fd);
     }
 
     result = close(s_fd);
@@ -110,7 +148,7 @@ int api_start(API_Router *router, const char *addr, uint16_t port) {
     return 0;
 }
 
-static void handle_connection(int s_fd) {
+static void handle_connection(API_Router *router, int s_fd) {
     int c_fd, result;
     struct sockaddr_in c_addr;
     socklen_t c_addr_size;
@@ -129,7 +167,9 @@ static void handle_connection(int s_fd) {
         return perror("read_request");
     }
 
-    response = build_response(request);
+    response = build_response(router, request);
+
+    free(request.raw);
 
     result = write_response(c_fd, response);
     if (result == -1) {
@@ -146,6 +186,7 @@ static int read_request(int c_fd, API_Request *request) {
     char buf[BUF_SIZE];
     char *buffer = malloc(sizeof(char));
     size_t buffer_size = 0;
+    char *token = NULL;
 
     if (buffer == NULL) {
         return -1;
@@ -186,17 +227,30 @@ static int read_request(int c_fd, API_Request *request) {
     } while(1);
 
     buffer[buffer_size] = '\0';
-    request->buffer = buffer;
+
+    request->raw = buffer;
+
+    token = strsep(&buffer, " ");
+    request->method = parse_method(token);
+
+    token = strsep(&buffer, " ");
+    request->path = token;
 
     return 0;
 }
 
-static API_Response build_response(API_Request request) {
+static API_Response build_response(API_Router *router, API_Request request) {
+    for (size_t i = 0; i < router->count; ++i) {
+        API_Route route = router->items[i];
+        if (strcmp(route.path, request.path) == 0 && route.method == request.method) {
+            return route.callback(request);
+        }
+    }
+
     // TODO: make this great again
     API_Response response;
-    char *buffer = "HTTP/1.1 200 OK\n\nHi";
 
-    response.buffer = buffer;
+    response.buffer = "HTTP/1.1 404\n\nNot found";
 
     return response;
 }
@@ -217,6 +271,18 @@ static int write_response(int c_fd, API_Response response) {
     } while (buffer_size > 0);
 
     return 0;
+}
+
+static API_Method parse_method(char *buffer) {
+    if (strcmp(buffer, "GET") == 0) {
+        return METHOD_GET;
+    }
+
+    if (strcmp(buffer, "POST") == 0) {
+        return METHOD_POST;
+    }
+
+    return METHOD_UNDEFINED;
 }
 
 #endif // API_IMPLEMENTATION
