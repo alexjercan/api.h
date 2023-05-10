@@ -296,6 +296,7 @@ static int read_request(int c_fd, API_Request *request) {
 static API_Response build_response(API_Router *router, API_Request request) {
     for (size_t i = 0; i < router->count; ++i) {
         API_Route route = router->items[i];
+        // TODO: implement an eq function for path
         if (strcmp(route.path, request.path) == 0 && route.method == request.method) {
             return route.callback(request);
         }
