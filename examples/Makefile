@@ -1,11 +1,14 @@
 CC = clang
 CFLAGS = -Wall -Wextra -I..
 
-all: main
+all: curl_main html_main
 
-main: main.c ../api.h
-	$(CC) $(CFLAGS) -o $@ $<
+curl_main: curl/main.c ../api.h
+	$(CC) $(CFLAGS) -o ./curl/main $<
+
+html_main: html/main.c ../api.h
+	$(CC) $(CFLAGS) -o ./html/main $<
 
 .PHONY: clean
 clean:
-	rm -rf main
+	rm -rf ./curl/main ./html/main

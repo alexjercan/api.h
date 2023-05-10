@@ -228,6 +228,8 @@ static int handle_connection(API_Router *router, int s_fd) {
         return -1;
     }
 
+    free(response.body);
+
     result = close(c_fd);
     if (result == -1) {
         return -1;
