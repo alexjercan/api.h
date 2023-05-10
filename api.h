@@ -43,8 +43,17 @@ void api_destroy(struct API_Router *router);
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <signal.h>
 
 #define BUF_SIZE 2048
+
+#ifndef API_BACKLOG_SIZE
+#define API_BACKLOG_SIZE 5
+#endif // !API_BACKLOG_SIZE
+
+#define UNUSED(x) (void)(x)
 
 typedef struct API_Route {
     const char *path;
@@ -60,13 +69,20 @@ typedef struct API_Router {
     API_Callback route404;
 } API_Router;
 
-static void handle_connection(API_Router *router, int s_fd);
+static int handle_connection(API_Router *router, int s_fd);
 static int read_request(int c_fd, API_Request *request);
 static API_Response build_response(API_Router *router, API_Request request);
 static int write_response(int c_fd, API_Response response);
 static API_Method parse_method(char *buffer);
 static char* make_message(const char *fmt, ...);
 static API_Response route404(API_Request request);
+
+static volatile sig_atomic_t keep_running = 1;
+
+void handle_shutdown(int signal) {
+    UNUSED(signal);
+    keep_running = 0;
+}
 
 API_Router* api_create() {
     API_Router *router = malloc(sizeof(API_Router));
@@ -107,8 +123,11 @@ int api_route(API_Router *router, const char *path, API_Method method, API_Callb
 }
 
 int api_start(API_Router *router, const char *addr, uint16_t port) {
-    int s_fd, result;
+    int s_fd, result, optval = 1;
     struct sockaddr_in s_addr;
+
+    signal(SIGINT, handle_shutdown);
+    signal(SIGTERM, handle_shutdown);
 
     result = socket(AF_INET, SOCK_STREAM, 0);
     if (result == -1) {
@@ -116,6 +135,19 @@ int api_start(API_Router *router, const char *addr, uint16_t port) {
         return result;
     }
     s_fd = result;
+
+    setsockopt(s_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+
+    result = fcntl(s_fd, F_GETFL, 0);
+    if (result == -1) {
+        perror("fcntl");
+        return -1;
+    }
+    result = fcntl(s_fd, F_SETFL, result | O_NONBLOCK);
+    if (result == -1) {
+        perror("fcntl");
+        return -1;
+    }
 
     memset(&s_addr, 0, sizeof(s_addr));
     s_addr.sin_family = AF_INET;
@@ -134,18 +166,25 @@ int api_start(API_Router *router, const char *addr, uint16_t port) {
         return result;
     }
 
-    // TODO: Should change from 5 to some settings
-    result = listen(s_fd, 5);
+    result = listen(s_fd, API_BACKLOG_SIZE);
     if (result == -1) {
         perror("listen");
         close(s_fd);
         return result;
     }
 
-    // TODO: How to do gracefull shutdown?
-    while (1) {
-        handle_connection(router, s_fd);
+    while (keep_running) {
+        int result = handle_connection(router, s_fd);
+        if (result == -1 && errno == EWOULDBLOCK) {
+            continue;
+        }
+        if (result == -1) {
+            perror("handle_connection");
+            break;
+        }
     }
+
+    shutdown(s_fd, SHUT_RDWR);
 
     result = close(s_fd);
     if (result == -1) {
@@ -161,7 +200,7 @@ void api_destroy(struct API_Router *router) {
     free(router);
 }
 
-static void handle_connection(API_Router *router, int s_fd) {
+static int handle_connection(API_Router *router, int s_fd) {
     int c_fd, result;
     struct sockaddr_in c_addr;
     socklen_t c_addr_size;
@@ -171,13 +210,13 @@ static void handle_connection(API_Router *router, int s_fd) {
     c_addr_size = sizeof(c_addr);
     result = accept(s_fd, (struct sockaddr *)&c_addr, &c_addr_size);
     if (result == -1) {
-        return perror("accept");
+        return -1;
     }
     c_fd = result;
 
     result = read_request(c_fd, &request);
     if (result == -1) {
-        return perror("read_request");
+        return -1;
     }
 
     response = build_response(router, request);
@@ -186,13 +225,15 @@ static void handle_connection(API_Router *router, int s_fd) {
 
     result = write_response(c_fd, response);
     if (result == -1) {
-        return perror("write_response");
+        return -1;
     }
 
     result = close(c_fd);
     if (result == -1) {
-        return perror("close");
+        return -1;
     }
+
+    return 0;
 }
 
 static int read_request(int c_fd, API_Request *request) {
@@ -337,6 +378,7 @@ static char* make_message(const char *fmt, ...) {
 
 static API_Response route404(API_Request request) {
     API_Response response = { .status = 404, .body = "Not found" };
+    UNUSED(request);
 
     return response;
 }
