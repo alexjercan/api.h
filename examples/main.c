@@ -7,17 +7,13 @@
 #define PORT 8080
 
 API_Response callback(API_Request request) {
-    API_Response response;
-
-    response.buffer = "HTTP/1.1 200 OK\n\nHello";
+    API_Response response = { .status = 200, .body = "Hello" };
 
     return response;
 }
 
 API_Response another(API_Request request) {
-    API_Response response;
-
-    response.buffer = "HTTP/1.1 200 OK\n\nAnother";
+    API_Response response = { .status = 200, .body = "Another" };
 
     return response;
 }

@@ -17,7 +17,8 @@ typedef struct API_Request {
 } API_Request;
 
 typedef struct API_Response {
-    char *buffer;
+    unsigned short status;
+    char *body;
 } API_Response;
 
 struct API_Router;
@@ -41,6 +42,7 @@ void api_destroy(struct API_Router *router);
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <stdarg.h>
 
 #define BUF_SIZE 2048
 
@@ -54,6 +56,8 @@ typedef struct API_Router {
     API_Route *items;
     size_t count;
     size_t capacity;
+
+    API_Callback route404;
 } API_Router;
 
 static void handle_connection(API_Router *router, int s_fd);
@@ -61,6 +65,8 @@ static int read_request(int c_fd, API_Request *request);
 static API_Response build_response(API_Router *router, API_Request request);
 static int write_response(int c_fd, API_Response response);
 static API_Method parse_method(char *buffer);
+static char* make_message(const char *fmt, ...);
+static API_Response route404(API_Request request);
 
 API_Router* api_create() {
     API_Router *router = malloc(sizeof(API_Router));
@@ -68,6 +74,8 @@ API_Router* api_create() {
     router->items = NULL;
     router->count = 0;
     router->capacity = 0;
+
+    router->route404 = route404;
 
     return router;
 }
@@ -146,6 +154,11 @@ int api_start(API_Router *router, const char *addr, uint16_t port) {
     }
 
     return 0;
+}
+
+void api_destroy(struct API_Router *router) {
+    free(router->items);
+    free(router);
 }
 
 static void handle_connection(API_Router *router, int s_fd) {
@@ -247,28 +260,33 @@ static API_Response build_response(API_Router *router, API_Request request) {
         }
     }
 
-    // TODO: make this great again
-    API_Response response;
-
-    response.buffer = "HTTP/1.1 404\n\nNot found";
-
-    return response;
+    return router->route404(request);
 }
 
 static int write_response(int c_fd, API_Response response) {
-    char *buffer = response.buffer;
-    size_t buffer_size = strlen(buffer);
+    char *buffer = NULL;
+    size_t buffer_size, buffer_len;
+
+    buffer = make_message( "HTTP/1.1 %d\n\n%s", response.status, response.body);
+    if (buffer == NULL) {
+        perror("make_message");
+        return -1;
+    }
+    buffer_len = strlen(buffer);
+    buffer_size = 0;
 
     do {
-        ssize_t n_bytes = write(c_fd, buffer, buffer_size);
+        ssize_t n_bytes = write(c_fd, buffer + buffer_size, buffer_len);
 
         if (n_bytes == -1) {
             return -1;
         }
 
-        buffer += n_bytes;
-        buffer_size -= n_bytes;
-    } while (buffer_size > 0);
+        buffer_size += n_bytes;
+        buffer_len -= n_bytes;
+    } while (buffer_len > 0);
+
+    free(buffer);
 
     return 0;
 }
@@ -283,6 +301,44 @@ static API_Method parse_method(char *buffer) {
     }
 
     return METHOD_UNDEFINED;
+}
+
+static char* make_message(const char *fmt, ...) {
+    int n = 0;
+    size_t size = 0;
+    char *p = NULL;
+    va_list ap;
+
+    va_start(ap, fmt);
+    n = vsnprintf(p, size, fmt, ap);
+    va_end(ap);
+
+    if (n < 0) {
+        return NULL;
+    }
+
+    size = (size_t) n + 1;
+    p = malloc(size);
+    if (p == NULL) {
+        return NULL;
+    }
+
+    va_start(ap, fmt);
+    n = vsnprintf(p, size, fmt, ap);
+    va_end(ap);
+
+    if (n < 0) {
+        free(p);
+        return NULL;
+    }
+
+    return p;
+}
+
+static API_Response route404(API_Request request) {
+    API_Response response = { .status = 404, .body = "Not found" };
+
+    return response;
 }
 
 #endif // API_IMPLEMENTATION
